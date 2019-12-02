@@ -12,11 +12,11 @@ class SimplifiedShapleyAttributionModel:
 
     def _r(self, S):
         return sum(
-            [1 if S.issubset(journey) else 0 for journey in self.indexed_journeys[len(S)]]
+            [1 if S == journey else 0 for journey in self.indexed_journeys[len(S)]]
         )
 
     def _phi(self, channel_index):
-        S_all = [set(S) for S in self.powerset(self.P) if channel_index in S]
+        S_all = [set(S) for S in self.P_power if channel_index in S]
         score = 0
         print(f"Computing phi for channel {channel_index}...")
         for S in tqdm(S_all):
@@ -25,6 +25,7 @@ class SimplifiedShapleyAttributionModel:
 
     def attribute(self, journeys):
         self.P = set(chain(*journeys))
+        self.P_power = self.powerset(self.P)
         self.journeys = [set(journey) for journey in journeys]
         self.indexed_journeys = {
             i: [S for S in self.journeys if len(S) == i]
