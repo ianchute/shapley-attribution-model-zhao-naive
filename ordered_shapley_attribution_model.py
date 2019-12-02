@@ -13,9 +13,11 @@ class OrderedShapleyAttributionModel:
     def _r(self, S, channel_index, touchpoint_index):
         return sum(
             [
-                1
-                if (S == journey_set)
-                and (journey[touchpoint_index - 1] == channel_index)
+                1 / journey.count(channel_index)
+                if (
+                    (S == journey_set)
+                    and (journey[touchpoint_index - 1] == channel_index)
+                )
                 else 0
                 for journey, journey_set in self.indexed_journeys[len(S)]
                 if touchpoint_index <= len(journey)
@@ -29,17 +31,25 @@ class OrderedShapleyAttributionModel:
             f"Computing phi for channel {channel_index}, touchpoint {touchpoint_index}..."
         )
         for S in tqdm(S_all):
-            score += 1.0 / len(S) * self._r(S, channel_index, touchpoint_index)
+            score += self._r(S, channel_index, touchpoint_index) / len(S)
+        print(
+            f"Attribution score for channel {channel_index}, touchpoint {touchpoint_index}: {score:.2f}"
+        )
+        print()
         return score
 
     def attribute(self, journeys):
         self.P = set(chain(*journeys))
-        self.P_power = self.powerset(self.P)
+        print("Running Ordered Shapley Attribution Model...")
+        print(f"Found {len(self.P)} unique channels!")
+        self.P_power = list(self.powerset(self.P))
         self.N = max([len(journey) for journey in journeys])
+        print(f"Found {self.N} maximum touchpoints!")
         self.journeys = journeys
         self.indexed_journeys = {
             i: [(S, set(S)) for S in self.journeys if len(set(S)) == i]
             for i in range(1, len(self.P) + 1)
         }
-
+        print(f"Proceeding to attribution computation...")
+        print()
         return {j: [self._phi(j, i) for i in range(1, self.N + 1)] for j in self.P}

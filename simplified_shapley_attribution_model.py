@@ -20,15 +20,21 @@ class SimplifiedShapleyAttributionModel:
         score = 0
         print(f"Computing phi for channel {channel_index}...")
         for S in tqdm(S_all):
-            score += 1.0 / len(S) * self._r(S)
+            score += self._r(S) / len(S)
+        print(f"Attribution score for channel {channel_index}: {score:.2f}")
+        print()
         return score
 
     def attribute(self, journeys):
         self.P = set(chain(*journeys))
-        self.P_power = self.powerset(self.P)
+        print("Running Simplified Shapley Attribution Model...")
+        print(f"Found {len(self.P)} unique channels!")
+        self.P_power = list(self.powerset(self.P))
         self.journeys = [set(journey) for journey in journeys]
         self.indexed_journeys = {
             i: [S for S in self.journeys if len(S) == i]
             for i in range(1, len(self.P) + 1)
         }
+        print(f"Proceeding to attribution computation...")
+        print()
         return {j: self._phi(j) for j in self.P}

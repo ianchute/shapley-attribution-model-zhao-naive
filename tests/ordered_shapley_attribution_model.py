@@ -1,17 +1,8 @@
 from ordered_shapley_attribution_model import OrderedShapleyAttributionModel
-import pandas as pd
-import numpy as np
+import json
 
-conversion_token = 21
-journeys = pd.read_csv("data/sample.csv").values
-journeys = [
-    [
-        int(channel)
-        for channel in journey
-        if not np.isnan(channel) and channel != conversion_token
-    ]
-    for journey in journeys
-]
+with open("data/sample.json", "r") as f:
+    journeys = json.load(f)
 
 o = OrderedShapleyAttributionModel()
 result = o.attribute(journeys)
@@ -19,7 +10,8 @@ result = o.attribute(journeys)
 print(f"Total value: {len(journeys)}")
 total = 0
 for k, v in result.items():
-    print(f"Channel {k}: {v}")
-#     total += v
+    vsum = sum(v)
+    print(f"Channel {k}: {vsum}")
+    total += vsum
 
-# print(f"Total of attributed values: {total:.2f}")
+print(f"Total of attributed values: {total:.2f}")
