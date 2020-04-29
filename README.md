@@ -1,4 +1,4 @@
-# Shapley Value Methods for Attribution Modeling
+# Shapley Value Methods for Attribution Modeling (Naive, Set-based)
 
 A Python implementation of ["Shapley Value Methods for Attribution Modeling in Online Advertising" by Zhao, et al.](https://arxiv.org/abs/1804.05327)
 
