@@ -7,7 +7,7 @@ but has exponential worst-case complexity in the number of unique channels.
 
 Complexity
 ----------
-O(n_journeys * 2^n_channels)  — practical for up to ~20 channels.
+O(n_journeys * n_channels)  — practical for up to ~20 channels.
 """
 
 from collections import Counter
@@ -23,8 +23,7 @@ class SimplifiedShapleyAttribution(BaseAttributionModel):
     """Exact set-based Shapley attribution (Zhao et al., 2018).
 
     Treats each journey as an unordered set of channels and computes exact
-    Shapley values.  Suitable when the number of unique channels is small
-    (< ~20).
+    Shapley values.  Only converting journeys contribute to attribution.
 
     Parameters
     ----------
@@ -32,16 +31,6 @@ class SimplifiedShapleyAttribution(BaseAttributionModel):
         If True, attribution scores are normalized to sum to 1.
     verbose : bool, default=False
         If True, print progress information during computation.
-
-    Examples
-    --------
-    >>> from shapley_attribution import SimplifiedShapleyAttribution
-    >>> model = SimplifiedShapleyAttribution()
-    >>> journeys = [[1, 2, 3], [1, 2], [2, 3], [1]]
-    >>> model.fit(journeys)
-    SimplifiedShapleyAttribution()
-    >>> model.get_attribution()  # doctest: +SKIP
-    {1: ..., 2: ..., 3: ...}
 
     References
     ----------
@@ -54,7 +43,12 @@ class SimplifiedShapleyAttribution(BaseAttributionModel):
         self.verbose = verbose
 
     def _compute_attribution(self, X):
-        journey_sets = Counter(frozenset(j) for j in X)
+        # Only count converting journeys
+        converting = [
+            j for i, j in enumerate(X) if self.conversions_[i]
+        ]
+
+        journey_sets = Counter(frozenset(j) for j in converting)
         channels = sorted({ch for j in X for ch in j})
 
         attribution = {}

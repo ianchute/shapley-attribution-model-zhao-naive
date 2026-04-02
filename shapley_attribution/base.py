@@ -43,8 +43,11 @@ class BaseAttributionModel(BaseEstimator, TransformerMixin, ABC):
         X : list of list of int/str
             Customer journeys.  Each journey is an ordered list of
             channel identifiers (ints or strings).
-        y : ignored
-            Present for API compatibility.
+        y : array-like of shape (n_journeys,) or None
+            Binary conversion labels (1=converted, 0=not).
+            Some models (e.g., MonteCarloShapleyAttribution) use this
+            to learn a conversion model.  Heuristic baselines ignore it.
+            If None, all journeys are assumed to be converting.
 
         Returns
         -------
@@ -53,6 +56,13 @@ class BaseAttributionModel(BaseEstimator, TransformerMixin, ABC):
         X = self._validate_journeys(X)
         self.channels_ = np.array(sorted({ch for journey in X for ch in journey}))
         self.channel_to_idx_ = {ch: i for i, ch in enumerate(self.channels_)}
+
+        # Store conversion labels for subclasses that need them
+        if y is not None:
+            self.conversions_ = np.asarray(y, dtype=int)
+        else:
+            self.conversions_ = np.ones(len(X), dtype=int)
+
         self.attribution_ = self._compute_attribution(X)
         self.is_fitted_ = True
         return self

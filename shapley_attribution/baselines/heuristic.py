@@ -2,8 +2,8 @@
 Heuristic (rule-based) attribution baselines.
 
 These are standard industry baselines used for comparison with
-Shapley-based methods.  None require fitting in the ML sense — they apply
-deterministic rules to each journey.
+Shapley-based methods.  They apply deterministic rules to each
+*converting* journey.  Non-converting journeys receive no credit.
 """
 
 import math
@@ -15,7 +15,7 @@ from shapley_attribution.base import BaseAttributionModel
 
 
 class FirstTouchAttribution(BaseAttributionModel):
-    """Assign 100% credit to the first channel in each journey.
+    """Assign 100% credit to the first channel in each converting journey.
 
     Parameters
     ----------
@@ -25,8 +25,9 @@ class FirstTouchAttribution(BaseAttributionModel):
 
     def _compute_attribution(self, X):
         scores = defaultdict(float)
-        for journey in X:
-            scores[journey[0]] += 1.0
+        for i, journey in enumerate(X):
+            if self.conversions_[i]:
+                scores[journey[0]] += 1.0
         return dict(scores)
 
     def _attribute_single(self, journey):
@@ -34,7 +35,7 @@ class FirstTouchAttribution(BaseAttributionModel):
 
 
 class LastTouchAttribution(BaseAttributionModel):
-    """Assign 100% credit to the last channel in each journey.
+    """Assign 100% credit to the last channel in each converting journey.
 
     Parameters
     ----------
@@ -44,8 +45,9 @@ class LastTouchAttribution(BaseAttributionModel):
 
     def _compute_attribution(self, X):
         scores = defaultdict(float)
-        for journey in X:
-            scores[journey[-1]] += 1.0
+        for i, journey in enumerate(X):
+            if self.conversions_[i]:
+                scores[journey[-1]] += 1.0
         return dict(scores)
 
     def _attribute_single(self, journey):
@@ -53,7 +55,7 @@ class LastTouchAttribution(BaseAttributionModel):
 
 
 class LinearAttribution(BaseAttributionModel):
-    """Distribute credit equally across all touchpoints in a journey.
+    """Distribute credit equally across all touchpoints in converting journeys.
 
     Parameters
     ----------
@@ -63,10 +65,11 @@ class LinearAttribution(BaseAttributionModel):
 
     def _compute_attribution(self, X):
         scores = defaultdict(float)
-        for journey in X:
-            credit = 1.0 / len(journey)
-            for ch in journey:
-                scores[ch] += credit
+        for i, journey in enumerate(X):
+            if self.conversions_[i]:
+                credit = 1.0 / len(journey)
+                for ch in journey:
+                    scores[ch] += credit
         return dict(scores)
 
     def _attribute_single(self, journey):
@@ -98,11 +101,12 @@ class TimeDecayAttribution(BaseAttributionModel):
 
     def _compute_attribution(self, X):
         scores = defaultdict(float)
-        for journey in X:
-            weights = self._journey_weights(journey)
-            total_w = sum(weights)
-            for ch, w in zip(journey, weights):
-                scores[ch] += w / total_w if total_w > 0 else 0
+        for i, journey in enumerate(X):
+            if self.conversions_[i]:
+                weights = self._journey_weights(journey)
+                total_w = sum(weights)
+                for ch, w in zip(journey, weights):
+                    scores[ch] += w / total_w if total_w > 0 else 0
         return dict(scores)
 
     def _attribute_single(self, journey):
@@ -140,10 +144,11 @@ class PositionBasedAttribution(BaseAttributionModel):
 
     def _compute_attribution(self, X):
         scores = defaultdict(float)
-        for journey in X:
-            weights = self._journey_weights(journey)
-            for ch, w in zip(journey, weights):
-                scores[ch] += w
+        for i, journey in enumerate(X):
+            if self.conversions_[i]:
+                weights = self._journey_weights(journey)
+                for ch, w in zip(journey, weights):
+                    scores[ch] += w
         return dict(scores)
 
     def _attribute_single(self, journey):

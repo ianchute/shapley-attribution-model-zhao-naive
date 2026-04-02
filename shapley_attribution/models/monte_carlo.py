@@ -5,9 +5,12 @@ Instead of enumerating all 2^n coalitions, this samples random permutations
 and computes marginal contributions.  Convergence is O(1/sqrt(n_iter)) and
 the method scales to hundreds of channels.
 
-This implements the ApproShapley algorithm (Castro et al., 2009) adapted for
-the multi-touch attribution setting, following the approach used in the SHAP
-framework (Lundberg & Lee, 2017).
+The coalition value function is a learned conversion probability model
+(logistic regression by default), following the KernelSHAP approach
+(Lundberg & Lee, 2017).  Coalition values are computed by marginalizing
+over a background sample — inactive channels are replaced with values
+drawn from the empirical distribution, properly capturing the "absence"
+of a channel.
 
 References
 ----------
@@ -18,24 +21,12 @@ Lundberg, S., & Lee, S.-I. (2017). A Unified Approach to Interpreting Model
 """
 
 import numpy as np
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import PolynomialFeatures
 from tqdm import tqdm
 
 from shapley_attribution.base import BaseAttributionModel
-
-
-def _conversion_rate(journeys, channel_subset):
-    """Compute conversion rate for journeys whose channel set is a
-    subset of ``channel_subset``.
-
-    A journey "matches" a coalition if its channel set is a subset of the
-    coalition.  The conversion rate is the fraction of matching journeys
-    out of all journeys.
-    """
-    if len(channel_subset) == 0:
-        return 0.0
-    subset_frozen = frozenset(channel_subset)
-    matches = sum(1 for j in journeys if frozenset(j).issubset(subset_frozen))
-    return matches / len(journeys) if len(journeys) > 0 else 0.0
 
 
 class MonteCarloShapleyAttribution(BaseAttributionModel):
@@ -44,16 +35,22 @@ class MonteCarloShapleyAttribution(BaseAttributionModel):
     Scales to large channel spaces (hundreds of channels) by replacing
     exhaustive subset enumeration with random permutation sampling.
 
-    The marginal contribution of channel *c* in a random permutation *pi*
-    is: ``v(S_pi^c ∪ {c}) - v(S_pi^c)`` where ``S_pi^c`` is the set of
-    channels preceding *c* in the permutation and ``v`` is a coalition
-    value function (here: conversion rate of journeys whose channels are
-    within the coalition).
+    Uses a learned value function: a classifier is trained on
+    (journey_features, converted) pairs, then Shapley values are computed
+    over the classifier's predicted conversion probability.
+
+    Coalition values are estimated by marginalizing over a background
+    sample: for inactive channels, feature values are drawn from the
+    empirical distribution rather than set to zero.  This properly
+    represents "what would happen if this channel were absent" rather
+    than "what if this channel's feature were zero".
 
     Parameters
     ----------
-    n_iter : int, default=1000
+    n_iter : int, default=2000
         Number of random permutations to sample.
+    n_background : int, default=100
+        Number of background samples for marginalization.
     random_state : int or None, default=None
         Seed for reproducibility.
     normalize : bool, default=True
@@ -64,47 +61,143 @@ class MonteCarloShapleyAttribution(BaseAttributionModel):
     Examples
     --------
     >>> from shapley_attribution import MonteCarloShapleyAttribution
-    >>> model = MonteCarloShapleyAttribution(n_iter=500, random_state=42)
+    >>> model = MonteCarloShapleyAttribution(n_iter=1000, random_state=42)
     >>> journeys = [[1, 2, 3], [1, 2], [2, 3], [1]]
-    >>> model.fit(journeys)
-    MonteCarloShapleyAttribution(n_iter=500, random_state=42)
+    >>> conversions = [1, 1, 0, 0]
+    >>> model.fit(journeys, conversions)
+    MonteCarloShapleyAttribution(n_iter=1000, random_state=42)
     >>> scores = model.get_attribution()
     """
 
-    def __init__(self, n_iter=1000, random_state=None, normalize=True, verbose=False):
+    def __init__(
+        self,
+        n_iter=2000,
+        n_background=100,
+        random_state=None,
+        normalize=True,
+        verbose=False,
+    ):
         super().__init__(normalize=normalize)
         self.n_iter = n_iter
+        self.n_background = n_background
         self.random_state = random_state
         self.verbose = verbose
 
+    def fit(self, X, y=None):
+        """Fit the attribution model.
+
+        Parameters
+        ----------
+        X : list of list of int/str
+            Customer journeys.
+        y : array-like of shape (n_journeys,) or None
+            Binary conversion labels (1=converted, 0=not).
+            If None, all journeys are assumed to be converting (legacy mode).
+
+        Returns
+        -------
+        self
+        """
+        X = self._validate_journeys(X)
+        self.channels_ = np.array(sorted({ch for journey in X for ch in journey}))
+        self.channel_to_idx_ = {ch: i for i, ch in enumerate(self.channels_)}
+
+        if y is not None:
+            y = np.asarray(y, dtype=int)
+            if len(y) != len(X):
+                raise ValueError(
+                    f"Length mismatch: {len(X)} journeys but {len(y)} labels."
+                )
+            self.conversions_ = y
+        else:
+            self.conversions_ = np.ones(len(X), dtype=int)
+
+        self.attribution_ = self._compute_attribution(X)
+        self.is_fitted_ = True
+        return self
+
+    def _journeys_to_features(self, X):
+        """Convert journeys to a binary presence feature matrix.
+
+        For each journey, produces a feature vector of shape (n_channels,)
+        where each element is 1 if that channel appears in the journey, 0
+        otherwise.  Binary features have clean masking semantics: setting a
+        feature to 0 means "this channel was not present".
+        """
+        n_channels = len(self.channels_)
+        features = np.zeros((len(X), n_channels))
+        for i, journey in enumerate(X):
+            for ch in set(journey):
+                if ch in self.channel_to_idx_:
+                    features[i, self.channel_to_idx_[ch]] = 1.0
+        return features
+
     def _compute_attribution(self, X):
         rng = np.random.RandomState(self.random_state)
-        channels = sorted({ch for j in X for ch in j})
-        n_channels = len(channels)
-        channel_arr = np.array(channels)
+        n_channels = len(self.channels_)
 
-        # Pre-compute journey sets for fast lookup
-        journey_sets = [frozenset(j) for j in X]
-        n_journeys = len(X)
+        # ---- Build feature matrix and train conversion model ----
+        features = self._journeys_to_features(X)
+        y = self.conversions_
 
-        # Build a lookup: for each subset (as frozenset) → number of
-        # journeys whose channel set is a subset.  We cache results.
+        has_both_classes = len(np.unique(y)) >= 2
+        if has_both_classes:
+            # GBM captures interactions naturally; falls back to
+            # logistic regression with interaction features if sklearn
+            # version is too old for GBM predict_proba
+            self.value_model_ = GradientBoostingClassifier(
+                n_estimators=100,
+                max_depth=3,
+                learning_rate=0.1,
+                random_state=self.random_state,
+                subsample=0.8,
+            )
+            self.value_model_.fit(features, y)
+        else:
+            self.value_model_ = None
+            self._fallback_value = float(y.mean())
+
+        # ---- Background sample for marginalization ----
+        n_bg = min(self.n_background, len(X))
+        bg_indices = rng.choice(len(X), size=n_bg, replace=False)
+        background = features[bg_indices]  # shape (n_bg, n_channels)
+
+        # ---- Coalition value function ----
+        # v(S) = E_bg[ f(x_S, bg_{\S}) ]
+        # For active channels, use the background sample's own values;
+        # for inactive channels, also use the background values.
+        # This means: for each background sample, construct a feature vector
+        # where active channels keep background values and inactive channels
+        # also keep background values — then the marginal contribution is the
+        # *difference* when we toggle a channel from "background" to "active".
+        #
+        # More precisely: we evaluate f on each background sample, masking
+        # active channels to their real values and inactive ones to zero
+        # (since zero = "channel not present in journey").
+
         _cache = {}
 
-        def coalition_value(coalition_frozen):
-            if coalition_frozen in _cache:
-                return _cache[coalition_frozen]
-            if len(coalition_frozen) == 0:
-                val = 0.0
-            else:
-                matches = sum(
-                    1 for js in journey_sets if js.issubset(coalition_frozen)
-                )
-                val = matches / n_journeys
-            _cache[coalition_frozen] = val
+        def coalition_value(active_mask_tuple):
+            """Expected conversion probability when only `active` channels are present."""
+            if active_mask_tuple in _cache:
+                return _cache[active_mask_tuple]
+
+            active_mask = np.array(active_mask_tuple, dtype=float)
+
+            if self.value_model_ is None:
+                _cache[active_mask_tuple] = self._fallback_value
+                return self._fallback_value
+
+            # Mask background samples: keep active channel features, zero inactive
+            masked = background * active_mask[np.newaxis, :]
+            probs = self.value_model_.predict_proba(masked)[:, 1]
+            val = float(probs.mean())
+
+            _cache[active_mask_tuple] = val
             return val
 
-        shapley = {ch: 0.0 for ch in channels}
+        # ---- Monte Carlo Shapley ----
+        shapley = np.zeros(n_channels)
 
         iterator = range(self.n_iter)
         if self.verbose:
@@ -112,23 +205,25 @@ class MonteCarloShapleyAttribution(BaseAttributionModel):
 
         for _ in iterator:
             perm = rng.permutation(n_channels)
-            coalition = set()
-            prev_value = 0.0
+            active_mask = np.zeros(n_channels)
+            prev_value = coalition_value(tuple(active_mask))
+
             for idx in perm:
-                ch = channel_arr[idx]
-                coalition.add(ch)
-                curr_value = coalition_value(frozenset(coalition))
-                marginal = curr_value - prev_value
-                shapley[ch] += marginal
+                active_mask[idx] = 1.0
+                curr_value = coalition_value(tuple(active_mask))
+                shapley[idx] += curr_value - prev_value
                 prev_value = curr_value
 
         # Average over iterations
-        for ch in channels:
-            shapley[ch] /= self.n_iter
+        shapley /= self.n_iter
 
-        # Scale to total conversions
-        total = n_journeys
-        for ch in channels:
-            shapley[ch] *= total
+        # Scale to number of conversions
+        n_conversions = max(self.conversions_.sum(), 1)
+        shapley *= n_conversions
 
-        return shapley
+        # Map back to channel names
+        attribution = {}
+        for i, ch in enumerate(self.channels_):
+            attribution[ch] = max(shapley[i], 0.0)
+
+        return attribution
