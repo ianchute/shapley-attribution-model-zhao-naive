@@ -6,11 +6,10 @@ and computes marginal contributions.  Convergence is O(1/sqrt(n_iter)) and
 the method scales to hundreds of channels.
 
 The coalition value function is a learned conversion probability model
-(logistic regression by default), following the KernelSHAP approach
-(Lundberg & Lee, 2017).  Coalition values are computed by marginalizing
-over a background sample — inactive channels are replaced with values
-drawn from the empirical distribution, properly capturing the "absence"
-of a channel.
+(GBM by default).  Coalition values are computed using interventional
+Shapley: v(S) = P(conversion | exactly channels S present).  This is a
+deterministic function of the coalition mask with no background averaging,
+eliminating a major source of variance.
 
 References
 ----------
@@ -18,12 +17,12 @@ Castro, J., Gomez, D., & Tejada, J. (2009). Polynomial calculation of the
     Shapley value based on sampling. Computers & Operations Research.
 Lundberg, S., & Lee, S.-I. (2017). A Unified Approach to Interpreting Model
     Predictions. NeurIPS 2017.
+Janzing, D., Minorics, L., & Bloebaum, P. (2020). Feature relevance
+    quantification in explainable AI: A causal problem. AISTATS 2020.
 """
 
 import numpy as np
 from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import PolynomialFeatures
 from tqdm import tqdm
 
 from shapley_attribution.base import BaseAttributionModel
@@ -35,22 +34,15 @@ class MonteCarloShapleyAttribution(BaseAttributionModel):
     Scales to large channel spaces (hundreds of channels) by replacing
     exhaustive subset enumeration with random permutation sampling.
 
-    Uses a learned value function: a classifier is trained on
-    (journey_features, converted) pairs, then Shapley values are computed
-    over the classifier's predicted conversion probability.
-
-    Coalition values are estimated by marginalizing over a background
-    sample: for inactive channels, feature values are drawn from the
-    empirical distribution rather than set to zero.  This properly
-    represents "what would happen if this channel were absent" rather
-    than "what if this channel's feature were zero".
+    Uses a learned value function: a GBM classifier is trained on
+    (binary_presence, converted) pairs.  The coalition value v(S) is
+    the model's predicted conversion probability for the exact binary
+    mask where only channels in S are present (interventional approach).
 
     Parameters
     ----------
     n_iter : int, default=2000
         Number of random permutations to sample.
-    n_background : int, default=100
-        Number of background samples for marginalization.
     random_state : int or None, default=None
         Seed for reproducibility.
     normalize : bool, default=True
@@ -72,14 +64,12 @@ class MonteCarloShapleyAttribution(BaseAttributionModel):
     def __init__(
         self,
         n_iter=2000,
-        n_background=100,
         random_state=None,
         normalize=True,
         verbose=False,
     ):
         super().__init__(normalize=normalize)
         self.n_iter = n_iter
-        self.n_background = n_background
         self.random_state = random_state
         self.verbose = verbose
 
@@ -117,13 +107,7 @@ class MonteCarloShapleyAttribution(BaseAttributionModel):
         return self
 
     def _journeys_to_features(self, X):
-        """Convert journeys to a binary presence feature matrix.
-
-        For each journey, produces a feature vector of shape (n_channels,)
-        where each element is 1 if that channel appears in the journey, 0
-        otherwise.  Binary features have clean masking semantics: setting a
-        feature to 0 means "this channel was not present".
-        """
+        """Convert journeys to a binary presence feature matrix."""
         n_channels = len(self.channels_)
         features = np.zeros((len(X), n_channels))
         for i, journey in enumerate(X):
@@ -136,67 +120,61 @@ class MonteCarloShapleyAttribution(BaseAttributionModel):
         rng = np.random.RandomState(self.random_state)
         n_channels = len(self.channels_)
 
-        # ---- Build feature matrix and train conversion model ----
+        # ---- Train conversion model on binary presence features ----
         features = self._journeys_to_features(X)
         y = self.conversions_
 
         has_both_classes = len(np.unique(y)) >= 2
         if has_both_classes:
-            # GBM captures interactions naturally; falls back to
-            # logistic regression with interaction features if sklearn
-            # version is too old for GBM predict_proba
+            n_samples = len(y)
             self.value_model_ = GradientBoostingClassifier(
-                n_estimators=100,
-                max_depth=3,
+                n_estimators=200,
+                max_depth=min(4, max(1, n_samples // 10)),
                 learning_rate=0.1,
                 random_state=self.random_state,
-                subsample=0.8,
+                subsample=min(0.8, 1.0) if n_samples > 20 else 1.0,
+                min_samples_leaf=max(1, min(20, n_samples // 5)),
             )
             self.value_model_.fit(features, y)
         else:
+            # Only one class (e.g., all journeys convert) — the learned
+            # model would predict a constant, giving zero marginal
+            # contributions.  Fall back to set-based Shapley: credit
+            # each converting journey equally among its channels.
             self.value_model_ = None
-            self._fallback_value = float(y.mean())
+            from collections import Counter
+            converting = [j for i, j in enumerate(X) if y[i]]
+            journey_sets = Counter(frozenset(j) for j in converting)
+            fallback_attr = {}
+            for ch in self.channels_:
+                score = 0.0
+                for jset, count in journey_sets.items():
+                    if ch in jset:
+                        score += count / len(jset)
+                fallback_attr[ch] = score
+            return fallback_attr
 
-        # ---- Background sample for marginalization ----
-        n_bg = min(self.n_background, len(X))
-        bg_indices = rng.choice(len(X), size=n_bg, replace=False)
-        background = features[bg_indices]  # shape (n_bg, n_channels)
-
-        # ---- Coalition value function ----
-        # v(S) = E_bg[ f(x_S, bg_{\S}) ]
-        # For active channels, use the background sample's own values;
-        # for inactive channels, also use the background values.
-        # This means: for each background sample, construct a feature vector
-        # where active channels keep background values and inactive channels
-        # also keep background values — then the marginal contribution is the
-        # *difference* when we toggle a channel from "background" to "active".
-        #
-        # More precisely: we evaluate f on each background sample, masking
-        # active channels to their real values and inactive ones to zero
-        # (since zero = "channel not present in journey").
-
+        # ---- Interventional coalition value function ----
+        # v(S) = f(mask_S) where mask_S is the exact binary vector
+        # with 1s for channels in S and 0s elsewhere.
+        # No background averaging — deterministic and zero-variance
+        # for each coalition.
         _cache = {}
 
-        def coalition_value(active_mask_tuple):
-            """Expected conversion probability when only `active` channels are present."""
-            if active_mask_tuple in _cache:
-                return _cache[active_mask_tuple]
-
-            active_mask = np.array(active_mask_tuple, dtype=float)
+        def coalition_value(mask_tuple):
+            if mask_tuple in _cache:
+                return _cache[mask_tuple]
 
             if self.value_model_ is None:
-                _cache[active_mask_tuple] = self._fallback_value
+                _cache[mask_tuple] = self._fallback_value
                 return self._fallback_value
 
-            # Mask background samples: keep active channel features, zero inactive
-            masked = background * active_mask[np.newaxis, :]
-            probs = self.value_model_.predict_proba(masked)[:, 1]
-            val = float(probs.mean())
-
-            _cache[active_mask_tuple] = val
+            mask = np.array(mask_tuple, dtype=float).reshape(1, -1)
+            val = float(self.value_model_.predict_proba(mask)[0, 1])
+            _cache[mask_tuple] = val
             return val
 
-        # ---- Monte Carlo Shapley ----
+        # ---- Monte Carlo Shapley via permutation sampling ----
         shapley = np.zeros(n_channels)
 
         iterator = range(self.n_iter)
@@ -205,19 +183,19 @@ class MonteCarloShapleyAttribution(BaseAttributionModel):
 
         for _ in iterator:
             perm = rng.permutation(n_channels)
-            active_mask = np.zeros(n_channels)
-            prev_value = coalition_value(tuple(active_mask))
+            active = np.zeros(n_channels)
+            prev_value = coalition_value(tuple(active))
 
             for idx in perm:
-                active_mask[idx] = 1.0
-                curr_value = coalition_value(tuple(active_mask))
+                active[idx] = 1.0
+                curr_value = coalition_value(tuple(active))
                 shapley[idx] += curr_value - prev_value
                 prev_value = curr_value
 
-        # Average over iterations
         shapley /= self.n_iter
 
-        # Scale to number of conversions
+        # Scale: Shapley values are in probability space [0, 1].
+        # Scale to total conversions so they're comparable with baselines.
         n_conversions = max(self.conversions_.sum(), 1)
         shapley *= n_conversions
 
