@@ -199,7 +199,7 @@ shapley_attribution/
 - Zhao, K., Mahboobi, S. H., & Bagheri, S. R. (2018). [Shapley Value Methods for Attribution Modeling in Online Advertising](https://arxiv.org/abs/1804.05327). arXiv:1804.05327.
 - Castro, J., Gomez, D., & Tejada, J. (2009). Polynomial calculation of the Shapley value based on sampling. *Computers & Operations Research*, 37(9), 1699-1704.
 - Lundberg, S. M., & Lee, S.-I. (2017). [A Unified Approach to Interpreting Model Predictions](https://arxiv.org/abs/1705.07874). In *Advances in Neural Information Processing Systems* (NeurIPS).
-- Janzing, D., Minorics, L., & Blöbaum, P. (2020). [Feature relevance quantification in explainable AI: A causal problem](https://arxiv.org/abs/1910.08387). In *International Conference on Artificial Intelligence and Statistics* (AISTATS).
+- Janzing, D., Minorics, L., & Blöbaum, P. (2020). [Feature relevance quantification in explainable AI: A causal problem](https://arxiv.org/abs/1910.13413). In *International Conference on Artificial Intelligence and Statistics* (AISTATS).
 - Shapley, L. S. (1952). A Value for n-Person Games. In *Contributions to the Theory of Games II*. Princeton University Press.
 
 ## License
