@@ -172,6 +172,84 @@ class BaseAttributionModel(BaseEstimator, TransformerMixin, ABC):
             raise ValueError("X must contain at least one journey.")
         return journeys
 
+    # ------------------------------------------------------------------
+    # Visualization helpers (require matplotlib)
+    # ------------------------------------------------------------------
+
+    def plot_attribution(self, ax=None, title=None, top_k=None, ground_truth=None):
+        """Horizontal bar chart of channel attribution scores.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes or None
+            Target axes; a new figure is created when None.
+        title : str or None
+            Plot title.  Defaults to the model class name.
+        top_k : int or None
+            Show only the top-k channels by score.
+        ground_truth : ndarray or None
+            If provided, overlays ground-truth markers (◆) on the bars.
+
+        Returns
+        -------
+        ax : matplotlib.axes.Axes
+        """
+        from shapley_attribution.visualization import plot_attribution
+        return plot_attribution(self, ax=ax, title=title,
+                                top_k=top_k, ground_truth=ground_truth)
+
+    def plot_journey(self, journey, converted=True, ax=None, title=None):
+        """Sequence diagram for a single customer journey.
+
+        Touchpoints are rendered as labelled boxes connected by arrows.
+        Box colour encodes this model's attribution weight for each channel.
+
+        Parameters
+        ----------
+        journey : list
+            Ordered list of channel identifiers.
+        converted : bool
+            Whether the journey ended in a conversion.
+        ax : matplotlib.axes.Axes or None
+        title : str or None
+
+        Returns
+        -------
+        ax : matplotlib.axes.Axes
+        """
+        from shapley_attribution.visualization import plot_journey
+        return plot_journey(journey, model=self, converted=converted,
+                            ax=ax, title=title)
+
+    def plot_journeys_heatmap(self, journeys, conversions=None, ax=None,
+                              title=None, max_journeys=60):
+        """Heatmap of the per-journey attribution matrix.
+
+        Parameters
+        ----------
+        journeys : list of list
+            Journey data to transform.
+        conversions : array-like or None
+            If provided, only converting journeys are shown.
+        ax : matplotlib.axes.Axes or None
+        title : str or None
+        max_journeys : int
+            Maximum rows to render.
+
+        Returns
+        -------
+        ax : matplotlib.axes.Axes
+        """
+        from shapley_attribution.visualization import plot_journeys_heatmap
+        return plot_journeys_heatmap(self, journeys, conversions=conversions,
+                                     ax=ax,
+                                     title=title or f"{type(self).__name__} — Journey Heatmap",
+                                     max_journeys=max_journeys)
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
     def _check_is_fitted(self):
         if not getattr(self, "is_fitted_", False):
             raise RuntimeError(

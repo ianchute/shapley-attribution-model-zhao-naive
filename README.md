@@ -123,6 +123,100 @@ journeys, conversions, ground_truth, channels = make_attribution_problem(
 
 The synthetic generator creates journeys with roughly uniform channel sampling but conversion probability driven by channel presence and pairwise interactions via a logistic model with known coefficients. This rewards models that capture marginal contribution (Shapley) over frequency counting (heuristics).
 
+### How ground truth is computed
+
+Ground truth is determined entirely before any journeys are generated:
+
+1. **Channel importances** are sampled from a Dirichlet distribution (α=2) and raised to the power 1.3, producing moderate skew — one or two channels are notably more important than others, but not overwhelmingly so.
+2. **Conversion coefficients** are scaled from those importances: `coef[ch] = importance[ch] × n_channels × 3`.
+3. **Pairwise interaction terms** are sampled for every channel pair, adding synergy effects that no heuristic can capture.
+4. **An intercept is calibrated** via root-finding (`scipy.brentq`) so the overall conversion rate matches `base_conversion_rate`.
+5. **Journeys are generated** with near-uniform channel sampling, so channel frequency carries almost no signal — only which combinations appear drives conversion.
+6. **Conversion labels** are drawn as Bernoulli samples from the logistic model: `P(convert) = σ(intercept + Σcoef·presence + Σinteraction·pair_presence)`.
+
+The ground truth returned is the **normalized channel importance vector** from step 1 — the "true" individual channel weights, independent of interactions. This is intentionally slightly different from perfect Shapley values (which would distribute interaction credit across channels), giving a realistic evaluation target.
+
+## Visualization
+
+All fitted models expose three plot methods directly. Standalone functions are also available for multi-model comparison.
+
+```python
+from shapley_attribution import (
+    MonteCarloShapleyAttribution, LinearAttribution,
+    make_attribution_problem,
+    compare_models, plot_performance, plot_journey, plot_journeys_heatmap,
+)
+
+journeys, conversions, ground_truth, channels = make_attribution_problem(
+    n_channels=8, n_journeys=5000, random_state=42
+)
+
+mc = MonteCarloShapleyAttribution(n_iter=2000, random_state=42).fit(journeys, y=conversions)
+lin = LinearAttribution().fit(journeys, y=conversions)
+```
+
+### Per-model attribution bar chart
+
+```python
+# On the model directly — overlays ground truth markers
+mc.plot_attribution(ground_truth=ground_truth, top_k=8)
+```
+
+Shows a horizontal bar chart sorted by attribution score. Pass `ground_truth` to overlay ◆ markers for easy comparison.
+
+### Compare multiple models
+
+```python
+# Standalone function — accepts 2+ models or pre-computed arrays
+compare_models(
+    {"MC Shapley": mc, "Linear": lin},
+    ground_truth=ground_truth,
+)
+```
+
+Renders a grouped bar chart with one cluster per channel. Accepts either fitted model objects or raw numpy arrays.
+
+### Performance metrics panel
+
+```python
+from shapley_attribution.metrics import attribution_summary
+
+results = attribution_summary(
+    {"MC Shapley": mc.get_attribution_array(),
+     "Linear": lin.get_attribution_array()},
+    ground_truth,
+)
+plot_performance(results)
+```
+
+Three-panel figure (NMAE / Spearman rank correlation / top-3 overlap). The best-performing model is highlighted in each panel.
+
+### Journey sequence diagram
+
+```python
+# On the model directly — boxes are coloured by attribution weight
+mc.plot_journey(journeys[0], converted=bool(conversions[0]))
+
+# Standalone — without a model (plain sequence)
+plot_journey(journeys[0], converted=True)
+```
+
+Renders touchpoints as rounded boxes connected by arrows, with a conversion outcome node at the end. When called on a fitted model, box colour encodes that model's attribution score for each channel.
+
+### Per-journey attribution heatmap
+
+```python
+# On the model directly
+mc.plot_journeys_heatmap(journeys, conversions=conversions, max_journeys=50)
+
+# Standalone
+plot_journeys_heatmap(mc, journeys, conversions=conversions)
+```
+
+Heatmap of the `transform()` output matrix. Each row is a journey, each column is a channel. Pass `conversions` to show only converting journeys.
+
+---
+
 ## Benchmark
 
 ```bash
@@ -196,11 +290,25 @@ shapley_attribution/
 
 ## References
 
+The following papers directly inform the algorithms in this library:
+
+**Foundation**
+- Shapley, L. S. (1952). A Value for n-Person Games. In *Contributions to the Theory of Games II*, Annals of Mathematics Studies, vol. 28. Princeton University Press.
+  _The original cooperative game theory paper that defines the Shapley value axiomatically. All models in this library compute or approximate this quantity._
+
+**Attribution-specific Shapley**
 - Zhao, K., Mahboobi, S. H., & Bagheri, S. R. (2018). [Shapley Value Methods for Attribution Modeling in Online Advertising](https://arxiv.org/abs/1804.05327). arXiv:1804.05327.
-- Castro, J., Gomez, D., & Tejada, J. (2009). Polynomial calculation of the Shapley value based on sampling. *Computers & Operations Research*, 37(9), 1699-1704.
+  _Direct inspiration for this library. Introduces set-based and ordered Shapley variants for the multi-touch attribution problem. Our `SimplifiedShapleyAttribution` and `OrderedShapleyAttribution` implement these directly._
+
+**Monte Carlo sampling**
+- Castro, J., Gómez, D., & Tejada, J. (2009). Polynomial calculation of the Shapley value based on sampling. *Computers & Operations Research*, 36(9), 1726–1730.
+  _Introduces the ApproShapley algorithm: estimate Shapley values by averaging marginal contributions over random permutations. This is the sampling backbone of `MonteCarloShapleyAttribution`._
+
+**Interventional Shapley & learned value functions**
 - Lundberg, S. M., & Lee, S.-I. (2017). [A Unified Approach to Interpreting Model Predictions](https://arxiv.org/abs/1705.07874). In *Advances in Neural Information Processing Systems* (NeurIPS).
-- Janzing, D., Minorics, L., & Blöbaum, P. (2020). [Feature relevance quantification in explainable AI: A causal problem](https://arxiv.org/abs/1910.13413). In *International Conference on Artificial Intelligence and Statistics* (AISTATS).
-- Shapley, L. S. (1952). A Value for n-Person Games. In *Contributions to the Theory of Games II*. Princeton University Press.
+  _Introduces KernelSHAP: using a learned model as the coalition value function and sampling over coalitions. Our MC Shapley model adopts this approach (GBM as the value function)._
+- Janzing, D., Minorics, L., & Blöbaum, P. (2020). [Feature relevance quantification in explainable AI: A causal problem](https://arxiv.org/abs/1910.13413). In *Proceedings of the 23rd International Conference on Artificial Intelligence and Statistics* (AISTATS).
+  _Distinguishes interventional Shapley (v(S) = f(binary mask)) from observational Shapley (v(S) = E[f | X_S]). We use the interventional formulation — deterministic, no background averaging — which eliminates variance and improves stability._
 
 ## License
 

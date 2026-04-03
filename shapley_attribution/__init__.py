@@ -28,22 +28,39 @@ from shapley_attribution.metrics import (
     top_k_overlap,
     attribution_summary,
 )
+from shapley_attribution.visualization import (
+    plot_attribution,
+    compare_models,
+    plot_performance,
+    plot_journey,
+    plot_journeys_heatmap,
+)
 
 __version__ = "2.0.0"
 
 __all__ = [
+    # Models
     "BaseAttributionModel",
     "SimplifiedShapleyAttribution",
     "OrderedShapleyAttribution",
     "MonteCarloShapleyAttribution",
+    # Baselines
     "FirstTouchAttribution",
     "LastTouchAttribution",
     "LinearAttribution",
     "TimeDecayAttribution",
     "PositionBasedAttribution",
+    # Data
     "make_attribution_problem",
+    # Metrics
     "normalized_mean_absolute_error",
     "rank_correlation",
     "top_k_overlap",
     "attribution_summary",
+    # Visualization
+    "plot_attribution",
+    "compare_models",
+    "plot_performance",
+    "plot_journey",
+    "plot_journeys_heatmap",
 ]
