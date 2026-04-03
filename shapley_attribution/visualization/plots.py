@@ -7,11 +7,13 @@ larger figure layouts.  When ``ax=None`` a new figure is created and
 
 Functions
 ---------
-plot_attribution        Bar chart of one fitted model's channel scores.
-compare_models          Grouped bar chart comparing 2+ models (± ground truth).
-plot_performance        Three-panel metric comparison (NMAE / rank_corr / top-k).
-plot_journey            Touchpoint-sequence diagram for a single journey.
-plot_journeys_heatmap   Heatmap of the per-journey attribution matrix.
+plot_attribution          Bar chart of one fitted model's channel scores.
+compare_models            Grouped bar chart comparing 2+ models (± ground truth).
+plot_performance          Three-panel metric comparison (NMAE / rank_corr / top-k).
+plot_journey              Touchpoint-sequence diagram for a single journey.
+plot_journeys_heatmap     Heatmap of the per-journey attribution matrix.
+plot_position_attribution Stacked bar: per-channel credit broken down by journey position.
+                          (PathShapleyAttribution only — requires position_attribution_)
 """
 
 from __future__ import annotations
@@ -449,6 +451,104 @@ def plot_journeys_heatmap(
     if n_journeys_shown <= 30:
         ax.set_yticks(range(n_journeys_shown))
         ax.set_yticklabels(range(n_journeys_shown), fontsize=7)
+
+    _auto_show(ax, standalone)
+    return ax
+
+
+# ── plot_position_attribution ─────────────────────────────────────────────────
+
+def plot_position_attribution(
+    model,
+    ax=None,
+    top_k=None,
+    title=None,
+):
+    """Stacked bar chart: per-channel credit broken down by journey position.
+
+    Only available for models with a ``position_attribution_`` attribute
+    (i.e. :class:`PathShapleyAttribution`).  Each bar represents a channel;
+    the stack shows how much credit that channel earned when it appeared at
+    position 0, 1, 2, … across all converting journeys.
+
+    Early-position credit = upper-funnel / awareness role.
+    Late-position credit  = lower-funnel / conversion role.
+
+    Parameters
+    ----------
+    model : fitted PathShapleyAttribution
+    ax : matplotlib.axes.Axes or None
+    top_k : int or None
+        Show only the top-k channels by total credit.
+    title : str or None
+
+    Returns
+    -------
+    ax : matplotlib.axes.Axes
+    """
+    if not hasattr(model, "position_attribution_"):
+        raise AttributeError(
+            "plot_position_attribution requires a model with position_attribution_ "
+            "(fitted PathShapleyAttribution).  Got: " + type(model).__name__
+        )
+
+    standalone = ax is None
+
+    pos_attr = model.position_attribution_
+    channels = list(model.channels_)
+    labels = _channel_labels(channels)
+
+    # Total per channel
+    totals = np.array([sum(pos_attr[ch]) for ch in channels])
+    order = np.argsort(totals)[::-1]
+    if top_k is not None:
+        order = order[:top_k]
+
+    channels_sorted = [channels[i] for i in order]
+    labels_sorted = [labels[i] for i in order]
+    totals_sorted = totals[order]
+
+    # Max number of positions with any credit
+    max_pos = max(
+        (len(pos_attr[ch]) for ch in channels_sorted if pos_attr[ch]),
+        default=1,
+    )
+
+    # Position colour palette: light blue (early) → dark blue (late)
+    pos_colors = plt.cm.Blues(np.linspace(0.25, 0.85, max_pos))
+
+    if standalone:
+        fig, ax = plt.subplots(figsize=(max(6, len(channels_sorted) * 0.9), 4.5))
+
+    bottoms = np.zeros(len(channels_sorted))
+    for pos in range(max_pos):
+        values = np.array([
+            pos_attr[ch][pos] if pos < len(pos_attr[ch]) else 0.0
+            for ch in channels_sorted
+        ])
+        label = f"Position {pos + 1}"
+        ax.bar(labels_sorted, values, bottom=bottoms,
+               color=pos_colors[pos], label=label,
+               edgecolor="white", linewidth=0.4)
+        bottoms += values
+
+    # Value annotations on top of each bar
+    for i, (label, total) in enumerate(zip(labels_sorted, totals_sorted)):
+        if total > 0:
+            ax.text(i, total + totals_sorted.max() * 0.01, f"{total:.3f}",
+                    ha="center", va="bottom", fontsize=8, color="#333")
+
+    ax.set_ylabel("Path credit (summed across converting journeys)", fontsize=9)
+    ax.set_title(title or f"{type(model).__name__} — Position Attribution", fontsize=11,
+                 fontweight="bold")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.set_ylim(0, totals_sorted.max() * 1.18)
+
+    # Legend — only show first few positions to keep it clean
+    handles, leg_labels = ax.get_legend_handles_labels()
+    ax.legend(handles[:min(6, max_pos)], leg_labels[:min(6, max_pos)],
+              loc="upper right", fontsize=8, framealpha=0.85,
+              title="Touchpoint position")
 
     _auto_show(ax, standalone)
     return ax

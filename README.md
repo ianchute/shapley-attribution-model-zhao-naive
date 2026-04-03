@@ -57,9 +57,12 @@ results = attribution_summary(
 |---|---|---|---|
 | **Simplified Shapley** | `SimplifiedShapleyAttribution` | O(n_journeys x n_channels) | Exact values, <= 20 channels |
 | **Ordered Shapley** | `OrderedShapleyAttribution` | O(n_journeys x n_positions x 2^n_channels) | Position-aware, <= 15 channels |
-| **Monte Carlo Shapley** | `MonteCarloShapleyAttribution` | O(n_iter x n_channels) | Scalable to 100+ channels |
+| **Monte Carlo Shapley** | `MonteCarloShapleyAttribution` | O(n_iter x n_channels) | Scalable to 100+ channels, order-agnostic |
+| **Path Shapley** | `PathShapleyAttribution` | O(n_journeys x max_journey_length) | Ordering-aware, typically faster than MC |
 
-The MC Shapley model trains a GradientBoostingClassifier internally to learn conversion probability, then computes interventional Shapley values via Monte Carlo permutation sampling. Each coalition value is deterministic (no background averaging), eliminating variance and improving stability. This approach is inspired by KernelSHAP (Lundberg & Lee 2017) and interventional Shapley (Janzing et al. 2020).
+**MC Shapley** trains a GradientBoostingClassifier to learn conversion probability, then estimates Shapley values by averaging marginal contributions across random permutations (interventional formulation — no background averaging). It is order-agnostic: `[A, B]` and `[B, A]` receive identical attribution.
+
+**Path Shapley** uses the same GBM value function but replaces random permutation sampling with the *actual journey sequence* as the coalition-formation order. Channel B in journey `[A, B]` is credited for the lift *given A was already seen*; in `[B, A]`, A receives that conditional credit instead. This makes the model sensitive to channel ordering, which is meaningful when upstream channels prime the customer for downstream ones. Use `directed_interaction_strength > 0` in `make_attribution_problem` to generate data that rewards this sensitivity.
 
 ### Heuristic Baselines
 
@@ -122,6 +125,19 @@ journeys, conversions, ground_truth, channels = make_attribution_problem(
 ```
 
 The synthetic generator creates journeys with roughly uniform channel sampling but conversion probability driven by channel presence and pairwise interactions via a logistic model with known coefficients. This rewards models that capture marginal contribution (Shapley) over frequency counting (heuristics).
+
+Enable `directed_interaction_strength > 0` to additionally bake in **ordering effects**: an asymmetric bonus/penalty is applied when channel i appears *before* channel j (`directed_matrix[i, j] ≠ directed_matrix[j, i]`). This creates genuine sequential synergies that PathShapleyAttribution is designed to exploit, while set-based models (MC Shapley, heuristics) remain blind to them.
+
+```python
+journeys, conversions, ground_truth, channels, ordered_ground_truth = make_attribution_problem(
+    n_channels=8,
+    n_journeys=5000,
+    directed_interaction_strength=0.5,   # ordering effects active
+    return_ordered_ground_truth=True,    # oracle path GT via true model
+)
+```
+
+`ordered_ground_truth` is computed by walking each converting journey through the true logistic model and accumulating marginal contributions along the path — the oracle that PathShapleyAttribution aims to recover.
 
 ### How ground truth is computed
 
@@ -202,6 +218,21 @@ plot_journey(journeys[0], converted=True)
 ```
 
 Renders touchpoints as rounded boxes connected by arrows, with a conversion outcome node at the end. When called on a fitted model, box colour encodes that model's attribution score for each channel.
+
+### Position attribution breakdown (PathShapley only)
+
+```python
+path = PathShapleyAttribution(random_state=42).fit(journeys, y=conversions)
+
+# On the model directly
+path.plot_position_attribution()
+
+# Standalone
+from shapley_attribution import plot_position_attribution
+plot_position_attribution(path, top_k=6)
+```
+
+Stacked bar chart where each bar is a channel and each stack segment is a journey position (position 1 = first touchpoint, position 2 = second, …). Channels with tall early-position stacks are **upper-funnel** (awareness); channels with tall late-position stacks are **lower-funnel** (conversion drivers). Only available after fitting a `PathShapleyAttribution` model.
 
 ### Per-journey attribution heatmap
 
