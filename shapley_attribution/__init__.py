@@ -13,6 +13,7 @@ from shapley_attribution.models import (
     SimplifiedShapleyAttribution,
     OrderedShapleyAttribution,
     MonteCarloShapleyAttribution,
+    PathShapleyAttribution,
 )
 from shapley_attribution.baselines import (
     FirstTouchAttribution,
@@ -34,6 +35,7 @@ from shapley_attribution.visualization import (
     plot_performance,
     plot_journey,
     plot_journeys_heatmap,
+    plot_position_attribution,
 )
 
 __version__ = "2.0.0"
@@ -63,4 +65,7 @@ __all__ = [
     "plot_performance",
     "plot_journey",
     "plot_journeys_heatmap",
+    "plot_position_attribution",
+    # Models (continued)
+    "PathShapleyAttribution",
 ]

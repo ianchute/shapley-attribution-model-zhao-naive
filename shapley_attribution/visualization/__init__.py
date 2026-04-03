@@ -4,6 +4,7 @@ from shapley_attribution.visualization.plots import (
     plot_performance,
     plot_journey,
     plot_journeys_heatmap,
+    plot_position_attribution,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "plot_performance",
     "plot_journey",
     "plot_journeys_heatmap",
+    "plot_position_attribution",
 ]

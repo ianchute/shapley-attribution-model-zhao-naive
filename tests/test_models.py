@@ -6,6 +6,7 @@ import pytest
 from shapley_attribution import (
     SimplifiedShapleyAttribution,
     MonteCarloShapleyAttribution,
+    PathShapleyAttribution,
     FirstTouchAttribution,
     LastTouchAttribution,
     LinearAttribution,
@@ -39,6 +40,7 @@ def synthetic_data():
 ALL_MODELS = [
     SimplifiedShapleyAttribution,
     MonteCarloShapleyAttribution,
+    PathShapleyAttribution,
     FirstTouchAttribution,
     LastTouchAttribution,
     LinearAttribution,
@@ -303,3 +305,102 @@ class TestDatasetGenerator:
         np.testing.assert_array_equal(gt1, gt2)
         np.testing.assert_array_equal(c1, c2)
         assert j1 == j2
+
+    def test_directed_interactions_return_ordered_gt(self):
+        result = make_attribution_problem(
+            n_channels=5, n_journeys=500,
+            directed_interaction_strength=0.5,
+            random_state=42,
+            return_ordered_ground_truth=True,
+        )
+        assert len(result) == 5
+        journeys, conv, gt, channels, ordered_gt = result
+        assert len(ordered_gt) == 5
+        np.testing.assert_almost_equal(ordered_gt.sum(), 1.0, decimal=5)
+
+    def test_no_directed_interactions_gt_matches(self):
+        """Without directed effects the 4-tuple API is unchanged."""
+        result = make_attribution_problem(
+            n_channels=5, n_journeys=500, random_state=42
+        )
+        assert len(result) == 4
+
+
+# ---------------------------------------------------------------
+# PathShapleyAttribution specific tests
+# ---------------------------------------------------------------
+
+class TestPathShapley:
+
+    @pytest.fixture
+    def path_data(self):
+        """Synthetic data with both classes and mixed-length journeys."""
+        rng = np.random.RandomState(7)
+        journeys = [list(rng.choice([0, 1, 2, 3], size=rng.randint(2, 5)))
+                    for _ in range(200)]
+        conversions = np.array([rng.randint(0, 2) for _ in range(200)])
+        # Ensure at least one of each class
+        conversions[0] = 1
+        conversions[1] = 0
+        return journeys, conversions
+
+    def test_position_attribution_populated(self, path_data):
+        journeys, conv = path_data
+        model = PathShapleyAttribution(random_state=0).fit(journeys, y=conv)
+        assert hasattr(model, "position_attribution_")
+        assert len(model.position_attribution_) == len(model.channels_)
+        # Each channel should have a list with at least one entry
+        for ch, pos_scores in model.position_attribution_.items():
+            assert isinstance(pos_scores, list)
+
+    def test_ordering_sensitivity(self):
+        """Reversed journey order should give different per-journey attribution."""
+        # Enough data for GBM to have both classes
+        journeys = [[0, 1, 2]] * 40 + [[2, 1, 0]] * 20 + [[0]] * 20 + [[2]] * 20
+        conv     = [1] * 40 + [0] * 20 + [1] * 20 + [0] * 20
+
+        model = PathShapleyAttribution(random_state=42).fit(journeys, y=conv)
+
+        fwd = model._attribute_single([0, 1, 2])  # ch0 first
+        rev = model._attribute_single([2, 1, 0])  # ch2 first
+
+        # Channel 0 credit differs between orderings
+        assert not np.isclose(fwd.get(0, 0.0), rev.get(0, 0.0), atol=1e-6), (
+            "PathShapley should assign different credit to ch0 depending on "
+            "whether it appears first ([0,1,2]) or last ([2,1,0])"
+        )
+
+    def test_path_differs_from_mc(self):
+        """PathShapley and MCShapley should produce different attributions."""
+        journeys, conv, _, _ = make_attribution_problem(
+            n_channels=6, n_journeys=500, random_state=99
+        )
+        path = PathShapleyAttribution(random_state=0).fit(journeys, y=conv)
+        mc   = MonteCarloShapleyAttribution(n_iter=300, random_state=0).fit(journeys, y=conv)
+
+        arr_path = path.get_attribution_array()
+        arr_mc   = mc.get_attribution_array()
+        # They should differ (different sampling strategy)
+        assert not np.allclose(arr_path, arr_mc, atol=1e-3)
+
+    def test_path_beats_heuristics_on_directed_data(self):
+        """PathShapley should outperform Linear on ordered-ground-truth
+        when directed interactions are present."""
+        journeys, conv, _, _, ordered_gt = make_attribution_problem(
+            n_channels=6, n_journeys=3000,
+            directed_interaction_strength=0.6,
+            random_state=42,
+            return_ordered_ground_truth=True,
+        )
+
+        path   = PathShapleyAttribution(random_state=42).fit(journeys, y=conv)
+        linear = LinearAttribution().fit(journeys, y=conv)
+
+        from shapley_attribution.metrics import normalized_mean_absolute_error
+        path_nmae   = normalized_mean_absolute_error(ordered_gt, path.get_attribution_array())
+        linear_nmae = normalized_mean_absolute_error(ordered_gt, linear.get_attribution_array())
+
+        assert path_nmae < linear_nmae, (
+            f"PathShapley NMAE {path_nmae:.4f} should beat Linear {linear_nmae:.4f} "
+            "on directed data evaluated against ordered ground truth"
+        )
